@@ -1,3 +1,4 @@
+import type { EnvironmentsConfig } from "@allurereport/core-api";
 import { expect, test } from "@playwright/test";
 import { epic, feature, label, Stage, Status, story } from "allure-js-commons";
 
@@ -9,6 +10,9 @@ let commonPage: CommonPage;
 let treePage: TreePage;
 
 const now = Date.now();
+const longUnicodeEnv = "я".repeat(64);
+const longUnicodeEnvId = "long_unicode_env";
+
 const fixtures = {
   testResults: [
     {
@@ -69,11 +73,53 @@ const fixtures = {
         },
       ],
     },
+    {
+      name: "3 sample passed test with long unicode env",
+      fullName: "sample.js#3 sample passed test with long unicode env",
+      historyId: "4",
+      testCaseId: "4",
+      status: Status.PASSED,
+      stage: Stage.FINISHED,
+      start: now + 4000,
+      stop: now + 5000,
+      labels: [
+        {
+          name: "env",
+          value: longUnicodeEnv,
+        },
+      ],
+    },
   ],
 };
 
-const longUnicodeEnv = "я".repeat(64);
-const longUnicodeEnvId = "long_unicode_env";
+const reportEnvironments: EnvironmentsConfig = {
+  foo: {
+    variables: {
+      env_variable: "foo",
+      env_specific_variable: "foo",
+    },
+    matcher: ({ labels }) => labels.some(({ name, value }) => name === "env" && value === "foo"),
+  },
+  bar: {
+    variables: {
+      env_variable: "bar",
+      env_specific_variable: "bar",
+    },
+    matcher: ({ labels }) => labels.some(({ name, value }) => name === "env" && value === "bar"),
+  },
+  [longUnicodeEnvId]: {
+    name: longUnicodeEnv,
+    variables: {
+      env_variable: longUnicodeEnv,
+    },
+    matcher: ({ labels }) => labels.some(({ name, value }) => name === "env" && value === longUnicodeEnv),
+  },
+};
+
+// Every configured environment renders its own tree section, plus one section for the results that
+// match none of them. Derived from the fixtures so that adding an environment cannot silently
+// invalidate the expectation.
+const envSectionsCount = Object.keys(reportEnvironments).length + 1;
 
 test.beforeEach(async ({ page, browserName }) => {
   await label("env", browserName);
@@ -92,46 +138,9 @@ test.beforeEach(async ({ page, browserName }) => {
       variables: {
         env_variable: "unknown",
       },
-      environments: {
-        foo: {
-          variables: {
-            env_variable: "foo",
-            env_specific_variable: "foo",
-          },
-          matcher: ({ labels }) => labels.some(({ name, value }) => name === "env" && value === "foo"),
-        },
-        bar: {
-          variables: {
-            env_variable: "bar",
-            env_specific_variable: "bar",
-          },
-          matcher: ({ labels }) => labels.some(({ name, value }) => name === "env" && value === "bar"),
-        },
-        [longUnicodeEnvId]: {
-          name: longUnicodeEnv,
-          variables: {
-            env_variable: longUnicodeEnv,
-          },
-          matcher: ({ labels }) => labels.some(({ name, value }) => name === "env" && value === longUnicodeEnv),
-        },
-      },
+      environments: reportEnvironments,
     },
-    testResults: fixtures.testResults.concat({
-      name: "3 sample passed test with long unicode env",
-      fullName: "sample.js#3 sample passed test with long unicode env",
-      historyId: "4",
-      testCaseId: "4",
-      status: Status.PASSED,
-      stage: Stage.FINISHED,
-      start: now + 4000,
-      stop: now + 5000,
-      labels: [
-        {
-          name: "env",
-          value: longUnicodeEnv,
-        },
-      ],
-    }),
+    testResults: fixtures.testResults,
   });
 
   await page.goto(bootstrap.url);
@@ -142,26 +151,21 @@ test.afterAll(async () => {
 });
 
 test.describe("environments", () => {
-  // FIXME: the test works locally, but fails on CI; need to find a better way to test the functionality
-  test.skip("should render all environment tree sections by default and allow to toggle them", async ({
-    page,
-    browserName,
-  }) => {
-    // flaky test, but the feature works as expected
-    if (browserName !== "chromium") {
-      test.skip();
-    }
-
+  test("should render all environment tree sections by default and allow to toggle them", async ({ page }) => {
     const envPicker = page.getByTestId("environment-picker-button");
     const envButtons = page.getByTestId("tree-section-env-button");
-    const envButtonsLocators = await envButtons.all();
     const envSections = page.getByTestId("tree-section-env-content");
-    const envSectionsLocators = await envSections.all();
     const treeLeaves = page.getByTestId("tree-leaf");
 
     await expect(envPicker).toHaveText("All");
-    await expect(envButtons).toHaveCount(3);
-    await expect(envSections).toHaveCount(3);
+    await expect(envButtons).toHaveCount(envSectionsCount);
+    await expect(envSections).toHaveCount(envSectionsCount);
+
+    // Resolve the handles only once the sections are on the page: locator.all() takes a snapshot
+    // instead of waiting, so calling it earlier yields empty lists and turns the loops below into
+    // no-ops.
+    const envButtonsLocators = await envButtons.all();
+    const envSectionsLocators = await envSections.all();
 
     for (const envSectionLocator of envSectionsLocators) {
       await expect(envSectionLocator).toBeVisible();
@@ -181,7 +185,9 @@ test.describe("environments", () => {
       await expect(envSectionLocator).toBeVisible();
     }
 
-    await expect(treeLeaves).toHaveCount(4);
+    // In the "All" view every test result shows up as a leaf of its own environment section, so the
+    // leaf count matches the number of fixtures rather than the number of distinct test cases.
+    await expect(treeLeaves).toHaveCount(fixtures.testResults.length);
   });
 
   test("should allow to switch environments using the picker in the header", async () => {
